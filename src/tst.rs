@@ -310,7 +310,6 @@ fn parse_items(data: &str, remaining_items: &mut &[ast::Item], mut templates: Op
                 Expected::Optional(Box::new(Expected::Kind(SyntaxKind::WHITESPACE))),
                 Expected::Kind(SyntaxKind::R_PAREN),
                 Expected::Optional(Box::new(Expected::Kind(SyntaxKind::WHITESPACE))),
-                Expected::Kind(SyntaxKind::SEMICOLON),
             ])?;
         },
         _ => (),
@@ -513,7 +512,7 @@ impl TemplateInvocation {
             (input_bytes, &b""[..])
         };
 
-        // you get your indent removed it it is consistent with the first line
+        // you get your indent removed if it is consistent with the first line
         let mut whitespace_ident = Vec::new();
         for b in bytes {
             if !(b.is_ascii_whitespace() && *b != b'\r' && *b != b'\n') {
