@@ -14,10 +14,11 @@ extern crate log;
 extern crate ra_syntax;
 use std::collections::HashMap;
 use relative_path::{RelativePathBuf, RelativePath};
-use crate::tst::{TreeFile, Item};
-use crate::parsing::{ParseErrorWithPosAndFile, ParseError};
+use crate::tst::{TreeFile, Item, Template, Expr};
+use crate::parsing::{ParseErrorWithPosAndFile, ParseError, ParseErrorWithPos};
 use std::io::Write;
 use crate::runtime::Stack;
+use ra_syntax::SyntaxKind;
 
 /// Preprocessor
 #[derive(gumdrop::Options)]
@@ -83,7 +84,12 @@ fn main() {
         writeln!(&mut output_file_contents).unwrap();
 
         let mut stack = Stack::new();
-        file.parsed.write(&file.content, &mut output_file_contents, &mut stack);
+        if let Err(e) = file.parsed.write(&file.content, &mut output_file_contents, &mut stack).map_err(|e| e.with_file(&rel_path)) {
+            println!("in file {:?}", e.file);
+            let data = all_files.get(&e.file).unwrap();
+            println!("{}", error::display(data, e.range, &e.message));
+            std::process::exit(42);
+        }
 
         let mut file = std::fs::OpenOptions::new()
             .create(true)
@@ -117,48 +123,68 @@ fn parse_all<'q>(files: impl Iterator<Item=(&'q RelativePath, &'q str)>) -> Resu
                 .map_err(|e| e.with_file(k))?;
         }
 
-        for item in v.parsed.items.iter() {
-            match item {
-                Item::TemplateInvocation(inv) => {
-                    let template = match v.parsed.templates.get(&inv.name) {
-                        Some(t) => t,
-                        None => {
+        validate_items(&v.parsed.items, &v.parsed.templates).map_err(|e| e.with_file(k))?;
+    }
+
+    Ok(all_parsed_files)
+}
+
+fn validate_items(items: &[Item], templates: &HashMap<String, Template>) -> Result<(), ParseErrorWithPos> {
+    for item in items.iter() {
+        match item {
+            Item::TemplateInvocation(inv) => {
+                let template = match templates.get(&inv.name) {
+                    Some(t) => t,
+                    None => {
+                        return Err(ParseError::TypeError
+                            .with("call references unknown template", inv.name_range))
+                    }
+                };
+
+                use itertools::Itertools;
+
+                if template.args.len() != inv.args.len() {
+                    if template.args.len() == 0 {
+                        return Err(ParseError::TypeError
+                            .with("does not require arguments", inv.arg_range))
+                    } else if template.args.len() == 1 {
+                        return Err(ParseError::TypeError
+                            .with2(format!("requires 1 argument {:?}", template.args[0].1), inv.arg_range))
+                    } else {
+                        return Err(ParseError::TypeError
+                            .with2(
+                                format!(
+                                    "requires {} arguments: {}",
+                                    template.args.len(),
+                                    template.args.iter().map(|(_, name)| format!("{:?}", name)).join(", ")
+                                ),
+                                inv.arg_range))
+                    }
+                }
+
+                for arg in &inv.args {
+                    if arg.len() > 1 && arg[0].kind() == SyntaxKind::BANG {
+                        if arg[1].kind() != SyntaxKind::IDENT {
                             return Err(ParseError::TypeError
-                                .with("call references unknown template", inv.name_range)
-                                .with_file(k))
+                                .with("expected IDENT for a named argument", arg[1].text_range()))
                         }
-                    };
 
-                    use itertools::Itertools;
-
-                    if template.args.len() != inv.args.len() {
-                        if template.args.len() == 0 {
+                        if arg.len() > 2 {
                             return Err(ParseError::TypeError
-                                .with("does not require arguments", inv.arg_range)
-                                .with_file(k))
-                        } else if template.args.len() == 1 {
-                            return Err(ParseError::TypeError
-                                .with2(format!("requires 1 argument {:?}", template.args[0].1), inv.arg_range)
-                                .with_file(k))
-                        } else {
-                            return Err(ParseError::TypeError
-                                .with2(
-                                    format!(
-                                        "requires {} arguments: {}",
-                                        template.args.len(),
-                                        template.args.iter().map(|(_, name)| format!("{:?}", name)).join(", ")
-                                    ),
-                                    inv.arg_range)
-                                .with_file(k))
+                                .with("unexpected token for a named argument", arg[2].text_range()))
                         }
                     }
+                }
+            },
+            Item::Content(_) => {},
+            Item::Expr(e) => match e {
+                Expr::ForRange { items, .. } => {
+                    validate_items(&items, templates)?;
                 },
-                Item::Content(_) => {},
-                Item::Expr(_) => {}
             }
         }
     }
 
-    Ok(all_parsed_files)
+    Ok(())
 }
 

@@ -94,19 +94,21 @@ impl Expr {
             || text == "end"
     }
 
-    pub fn write(&self, data: &str, templates: &HashMap<String, Template>, output: &mut impl Write, stack: &mut Stack) {
+    pub fn write(&self, data: &str, templates: &HashMap<String, Template>, output: &mut impl Write, stack: &mut Stack) -> Result<(), ParseErrorWithPos> {
         match self {
             Expr::ForRange { range: Range::Numeric { from, to }, items, ident } => {
                 stack.push_named_value(ident, Varying::Integer(*from));
                 for i in *from..*to {
                     stack.update_named_value(ident, Varying::Integer(i));
                     for item in items {
-                        item.write(data, templates, output, stack);
+                        item.write(data, templates, output, stack)?;
                     }
                 }
                 stack.pop_named_value(ident);
             },
         }
+
+        Ok(())
     }
 }
 
@@ -138,17 +140,19 @@ impl Item {
         Ok(Item::TemplateInvocation(TemplateInvocation::parse(token)?))
     }
 
-    pub fn write(&self, data: &str, templates: &HashMap<String, Template>, output: &mut impl Write, stack: &mut Stack) {
+    pub fn write(&self, data: &str, templates: &HashMap<String, Template>, output: &mut impl Write, stack: &mut Stack) -> Result<(), ParseErrorWithPos> {
         match self {
             Item::TemplateInvocation(inv) => {
                 match templates.get(&inv.name) {
-                    None => warn!("template not located by name {}", inv.name),
-                    Some(template) => write!(output, "{}", inv.produce(data, template, &*stack)).unwrap(),
+                    None => unreachable!("template not located by name {}", inv.name),
+                    Some(template) => write!(output, "{}", inv.produce(data, template, &*stack)?).unwrap(),
                 }
             },
             Item::Content(c) => write!(output, "{}", c).unwrap(),
-            Item::Expr(e) => e.write(data, templates, output, stack),
+            Item::Expr(e) => e.write(data, templates, output, stack)?,
         }
+
+        Ok(())
     }
 }
 
@@ -198,10 +202,11 @@ impl TreeFile {
         })
     }
 
-    pub fn write(&self, data: &str, output: &mut impl Write, stack: &mut Stack) {
+    pub fn write(&self, data: &str, output: &mut impl Write, stack: &mut Stack) -> Result<(), ParseErrorWithPos> {
         for item in self.items.iter() {
-            item.write(data, &self.templates, output, stack);
+            item.write(data, &self.templates, output, stack)?;
         }
+        Ok(())
     }
 }
 
@@ -498,7 +503,7 @@ impl TemplateInvocation {
         })
     }
 
-    pub fn produce(&self, data: &str, template: &Template, stack: &Stack) -> String {
+    pub fn produce(&self, data: &str, template: &Template, stack: &Stack) -> Result<String, ParseErrorWithPos> {
         let input_bytes = template.get_bytes(data);
         let (bytes, start_newline) = if input_bytes.starts_with(b"\n") {
             (&input_bytes[1..], &input_bytes[..1])
@@ -527,11 +532,15 @@ impl TemplateInvocation {
         }
 
         let mut replacements = HashMap::new();
-        for ((_arg_token, _parameter, search), arg_value) in template.lookup_args().zip(self.args.iter()) {
-            if let (1, SyntaxKind::IDENT, ident) = (arg_value.len(), arg_value[0].kind(), arg_value[0].text()) {
-                if let Some(value) = stack.get_named(ident.as_str()) {
+        for ((_param_range, _parameter, search), arg_value) in template.lookup_args().zip(self.args.iter()) {
+            if let (2, SyntaxKind::BANG) = (arg_value.len(), arg_value[0].kind()) {
+                let ident_arg = arg_value.get(1).expect("validated to have 2 tokens");
+                let arg_name = ident_arg.to_string();
+                if let Some(value) = stack.get_named(&arg_name) {
                     replacements.insert(search, value.to_string());
                     continue;
+                } else {
+                    return Err(ParseError::RuntimeError.with2(format!("named argument {:?} is not in scope", arg_name), ident_arg.text_range()));
                 }
             }
 
@@ -567,7 +576,7 @@ impl TemplateInvocation {
             final_template.push_str(std::str::from_utf8(&adjusted_template_bytes[block_start..]).expect("no utf8 problems"));
         }
 
-        final_template
+        Ok(final_template)
     }
 }
 

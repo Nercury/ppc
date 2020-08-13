@@ -148,6 +148,7 @@ impl<'a> Expected<'a> {
 pub enum ParseError {
     SyntaxError,
     TypeError,
+    RuntimeError,
     ExpectedNextToken,
     ExpectedOtherToken,
 }
