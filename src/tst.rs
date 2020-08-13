@@ -1,21 +1,132 @@
 //! Template syntax tree
 
 use relative_path::{RelativePathBuf, RelativePath};
-use ra_syntax::{TextRange, ast, AstNode, SyntaxKind};
+use ra_syntax::{TextRange, ast, AstNode, SyntaxKind, SyntaxToken};
 use std::collections::HashMap;
 use crate::parsing::{ParseErrorWithPos, Expected, ParseError, ParseErrorWithPosAndFile};
 use crate::{parsing};
 use std::io::Write;
 
-pub struct TreeFile {
-    pub relative_path: RelativePathBuf,
-    pub items: Vec<Item>,
-    pub templates: HashMap<String, Template>,
+pub enum Range {
+    Numeric { from: i64, to: i64 },
+}
+
+pub enum Expr {
+    ForRange { ident: String, range: Range, items: Vec<Item> },
+}
+
+impl Expr {
+    pub fn parse_from_macro(data: &str, remaining: &mut &[ast::Item], token: SyntaxToken) -> Result<Expr, ParseErrorWithPos> {
+        Ok(match token.text().as_str() {
+            "for_range" => Self::parse_for_range(data, remaining, token)?,
+            "end" => return Err(ParseError::ExpectedOtherToken.with("no matching start", token.text_range())),
+            _=> unreachable!("did is_expr_start work"),
+        })
+    }
+
+    fn parse_for_range(data: &str, remaining: &mut &[ast::Item], mut token: SyntaxToken) -> Result<Expr, ParseErrorWithPos> {
+        let expr_start_token = token;
+        token = parsing::expect_next(expr_start_token.clone())?;
+        token = parsing::consume_expected_list_forward(token, &[
+            Expected::Kind(SyntaxKind::BANG),
+            Expected::Optional(Box::new(Expected::Kind(SyntaxKind::WHITESPACE))),
+            Expected::Kind(SyntaxKind::L_PAREN),
+            Expected::Optional(Box::new(Expected::Kind(SyntaxKind::WHITESPACE))),
+        ])?;
+
+        if token.kind() != SyntaxKind::IDENT {
+            return Err(ParseError::ExpectedOtherToken.with("expected IDENT", token.text_range()));
+        }
+
+        let ident_text = token.text().to_string();
+        token = parsing::expect_next(token)?;
+        token = parsing::consume_expected_list_forward(token, &[
+            Expected::Optional(Box::new(Expected::Kind(SyntaxKind::WHITESPACE))),
+            Expected::Kind(SyntaxKind::COMMA),
+            Expected::Optional(Box::new(Expected::Kind(SyntaxKind::WHITESPACE))),
+        ])?;
+
+        if token.kind() != SyntaxKind::INT_NUMBER {
+            return Err(ParseError::ExpectedOtherToken.with("expected INT_NUMBER", token.text_range()));
+        }
+
+        let range_start_token = token.clone();
+        token = parsing::expect_next(token)?;
+        token = parsing::consume_expected_list_forward(token, &[
+            Expected::Optional(Box::new(Expected::Kind(SyntaxKind::WHITESPACE))),
+            Expected::Kind(SyntaxKind::DOT),
+            Expected::Kind(SyntaxKind::DOT),
+            Expected::Optional(Box::new(Expected::Kind(SyntaxKind::WHITESPACE))),
+        ])?;
+
+        if token.kind() != range_start_token.kind() {
+            return Err(ParseError::ExpectedOtherToken.with2(format!("expected {:?}", range_start_token.kind()), token.text_range()));
+        }
+        let range_end_token = token.clone();
+
+        token = parsing::expect_next(token)?;
+        parsing::consume_expected_list_forward(token, &[
+            Expected::Optional(Box::new(Expected::Kind(SyntaxKind::WHITESPACE))),
+            Expected::Kind(SyntaxKind::R_PAREN),
+            Expected::Optional(Box::new(Expected::Kind(SyntaxKind::WHITESPACE))),
+            Expected::Kind(SyntaxKind::SEMICOLON),
+        ])?;
+
+        *remaining = &remaining[1..];
+
+        let items = parse_items(data, remaining, None, ParseItemsEnd::EndMacro { start: expr_start_token })?;
+
+        Ok(Expr::ForRange {
+            ident: ident_text,
+            range: Range::Numeric {
+                from: range_start_token.text().parse().unwrap(),
+                to: range_end_token.text().parse().unwrap()
+            },
+            items,
+        })
+    }
+
+    pub fn is_expr_start(ident_token: &SyntaxToken) -> bool {
+        assert_eq!(ident_token.kind(), SyntaxKind::IDENT);
+        let text = ident_token.text().as_str();
+        text == "for_range"
+            || text == "end"
+    }
 }
 
 pub enum Item {
     TemplateInvocation(TemplateInvocation),
+    Expr(Expr),
     Content(String),
+}
+
+impl Item {
+    pub fn parse_from_macro(data: &str, remaining: &mut &[ast::Item]) -> Result<Item, ParseErrorWithPos> {
+        let macro_call = match remaining.first().unwrap() {
+            ast::Item::MacroCall(ref m) => m.clone(),
+            _ => unreachable!(),
+        };
+
+        let mut token = macro_call.syntax().first_token().unwrap();
+        while token.kind() != SyntaxKind::IDENT {
+            token = parsing::expect_next(token)?;
+        }
+
+        if Expr::is_expr_start(&token) {
+            trace!("parse as expr {:?}", token);
+            return Ok(Item::Expr(Expr::parse_from_macro(data, remaining, token)?));
+        }
+
+        trace!("parse as template invocation {:?}", token);
+
+        Ok(Item::TemplateInvocation(TemplateInvocation::parse(token)?))
+    }
+}
+
+pub struct TreeFile {
+    pub relative_path: RelativePathBuf,
+    pub items: Vec<Item>,
+    pub templates: HashMap<String, Template>,
 }
 
 impl TreeFile {
@@ -38,73 +149,23 @@ impl TreeFile {
         let mut templates = HashMap::new();
         let mut items = Vec::new();
 
-        let mut something_was_printed = false;
-        let mut last_item_end = None;
-
         for node in tree.syntax().descendants() {
             match_ast! {
                 match node {
                     ast::Item(it) => {
-                        let syntax = it.syntax();
-                        trace!("node item {:?}", syntax);
-                        match it {
-                            ast::Item::MacroCall(ref macro_call) => {
-                                if let Some(_) = macro_call.is_macro_rules() {
-                                    trace!("parse as template {:?}", macro_call);
-                                    match Template::parse(&macro_call) {
-                                        Ok(template) => {
-                                            templates.insert(template.name.clone(), template);
-                                            something_was_printed = true;
-                                        },
-                                        Err(e) => {
-                                            return Err(
-                                                ParseError::SyntaxError
-                                                    .with2(e.message, e.range)
-                                                    .with_file(relative_path)
-                                            );
-                                        },
-                                    }
-                                } else {
-                                    trace!("parse as template use {:?}", macro_call);
-                                    match TemplateInvocation::parse(&macro_call) {
-                                        Ok(inv) => {
-                                            items.push(Item::TemplateInvocation(inv));
-                                            something_was_printed = true;
-                                        },
-                                        Err(e) => {
-                                            return Err(
-                                                ParseError::SyntaxError
-                                                    .with2(e.message, e.range)
-                                                    .with_file(relative_path)
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {
-                                if let Some(start) = syntax.first_token().map(|token| u32::from(token.text_range().start())) {
-                                    // whitespace handling, leave the exact space tokens from the previous item
-                                    if let (true, Some(end)) = (something_was_printed, last_item_end) {
-                                        let snippet = String::from_utf8_lossy(&data.as_bytes()[end as usize..start as usize]).into_owned();
-                                        items.push(Item::Content(snippet));
-                                    }
-
-                                    items.push(Item::Content(it.to_string()));
-                                    something_was_printed = true;
-                                }
-                            }
-                        }
-                        last_item_end = it.syntax().last_token().map(|token| u32::from(token.text_range().end()));
+                        items.push(it);
                     },
                     _ => (),
                 }
             }
         }
 
+        let mut remaining_items: &[ast::Item] = &items;
+
         Ok(TreeFile {
             relative_path: relative_path.to_owned(),
+            items: parse_items(data, &mut remaining_items, Some(&mut templates), ParseItemsEnd::EndOfFile).map_err(|e| e.with_file(relative_path))?,
             templates,
-            items,
         })
     }
 
@@ -118,9 +179,121 @@ impl TreeFile {
                     }
                 },
                 Item::Content(c) => write!(output, "{}", c).unwrap(),
+                Item::Expr(_) => {},
             }
         }
     }
+}
+
+#[derive(Eq, PartialEq)]
+enum ParseItemsEnd {
+    EndOfFile,
+    EndMacro { start: SyntaxToken },
+}
+
+fn parse_items(data: &str, remaining_items: &mut &[ast::Item], mut templates: Option<&mut HashMap<String, Template>>, end_type: ParseItemsEnd) -> Result<Vec<Item>, ParseErrorWithPos> {
+    trace!("==> parse_items remaining={}", remaining_items.len());
+
+    let mut output_items = Vec::new();
+
+    enum State {
+        Done,
+        NotMacroRulesButMacro,
+        NotMacro,
+    }
+
+    let mut something_was_printed = false;
+    let mut last_item_end = None;
+
+    while if end_type == ParseItemsEnd::EndOfFile {
+        remaining_items.len() > 0
+    } else {
+        remaining_items.len() > 0 && !item_macro_name_equals(&(remaining_items[0]), "end")
+    } {
+        let state: State;
+
+        if let Some(ast::Item::MacroCall(ref macro_call)) = remaining_items.first() {
+            if let Some(_) = macro_call.is_macro_rules() {
+                if let Some(ref mut templates) = templates {
+                    trace!("parse as template {:?}", macro_call);
+                    match Template::parse(&macro_call) {
+                        Ok(template) => {
+                            templates.insert(template.name.clone(), template);
+                        },
+                        Err(e) => {
+                            return Err(
+                                ParseError::SyntaxError
+                                    .with2(e.message, e.range)
+                            );
+                        },
+                    }
+                    state = State::Done;
+                    something_was_printed = true;
+                } else {
+                    return Err(ParseError::ExpectedOtherToken.with("macro_rules is not allowed inside blocks", macro_call.syntax().text_range()));
+                }
+            } else {
+                state = State::NotMacroRulesButMacro;
+            }
+
+        } else {
+            state = State::NotMacro;
+        }
+
+        match state {
+            State::Done => {},
+            State::NotMacroRulesButMacro => {
+                trace!("parse as item {:?}", remaining_items[0].syntax());
+                output_items.push(Item::parse_from_macro(data,remaining_items)?);
+                something_was_printed = true;
+            },
+            State::NotMacro => {
+                let it = remaining_items.first().unwrap();
+                if let Some(start) = it.syntax().first_token().map(|token| u32::from(token.text_range().start())) {
+                    // whitespace handling, leave the exact space tokens from the previous item
+                    if let (true, Some(end)) = (something_was_printed, last_item_end) {
+                        let snippet = String::from_utf8_lossy(&data.as_bytes()[end as usize..start as usize]).into_owned();
+                        output_items.push(Item::Content(snippet));
+                    }
+
+                    trace!("output content {:?}", it);
+                    output_items.push(Item::Content(it.to_string()));
+                    something_was_printed = true;
+                }
+            },
+        }
+
+        if let Some(it) = remaining_items.first() {
+            last_item_end = it.syntax().last_token().map(|token| u32::from(token.text_range().end()));
+        }
+
+        *remaining_items = &remaining_items[1..];
+    }
+
+    match (remaining_items.len(), end_type) {
+        (0, ParseItemsEnd::EndMacro { start }) =>
+            return Err(ParseError::ExpectedNextToken.with("missing end!", start.text_range())),
+        (_, ParseItemsEnd::EndMacro { .. }) => {
+            let token = remaining_items.first().unwrap().syntax().first_token().unwrap();
+            parsing::consume_expected_list_forward(token, &[
+                Expected::Optional(Box::new(Expected::Kind(SyntaxKind::COMMENT))),
+                Expected::Optional(Box::new(Expected::Kind(SyntaxKind::WHITESPACE))),
+                Expected::Kind(SyntaxKind::IDENT),
+                Expected::Kind(SyntaxKind::BANG),
+                Expected::Optional(Box::new(Expected::Kind(SyntaxKind::WHITESPACE))),
+                Expected::Kind(SyntaxKind::L_PAREN),
+                Expected::Optional(Box::new(Expected::Kind(SyntaxKind::WHITESPACE))),
+                Expected::Kind(SyntaxKind::R_PAREN),
+                Expected::Optional(Box::new(Expected::Kind(SyntaxKind::WHITESPACE))),
+                Expected::Kind(SyntaxKind::SEMICOLON),
+            ])?;
+        },
+        _ => (),
+    };
+
+    trace!("<== parse_items remaining={}", remaining_items.len());
+
+    Ok(output_items)
 }
 
 pub struct Template {
@@ -243,17 +416,14 @@ pub struct TemplateInvocation {
 }
 
 impl TemplateInvocation {
-    pub fn parse(macro_call: &ast::MacroCall) -> Result<TemplateInvocation, ParseErrorWithPos> {
-        let mut token = macro_call.syntax().first_token().unwrap();
-        while token.kind() != SyntaxKind::IDENT {
-            token = parsing::expect_next(token)?;
-        }
+    pub fn parse(ident_token: SyntaxToken) -> Result<TemplateInvocation, ParseErrorWithPos> {
+        assert_eq!(ident_token.kind(), SyntaxKind::IDENT);
 
-        let name = token.text().to_string();
-        let name_range = token.text_range();
+        let name = ident_token.text().to_string();
+        let name_range = ident_token.text_range();
         trace!("name {:?}", name);
 
-        token = parsing::expect_next(token)?;
+        let mut token = parsing::expect_next(ident_token)?;
 
         token = parsing::consume_expected_list_forward(token, &[
             Expected::Kind(SyntaxKind::BANG),
@@ -413,4 +583,23 @@ impl<'a> Iterator for LinesIter<'a> {
             return Some(&self.data[previous_start..self.line_start]);
         }
     }
+}
+
+fn item_macro_name_equals(item: &ast::Item, value: &str) -> bool {
+    if let ast::Item::MacroCall(ref macro_call) = item {
+        if let Some(mut token) = macro_call.syntax().first_token() {
+            while token.kind() != SyntaxKind::IDENT {
+                token = match token.next_token() {
+                    None => return false,
+                    Some(token) => token,
+                };
+            }
+
+            if token.text() == value {
+                return true;
+            }
+        }
+    }
+
+    false
 }

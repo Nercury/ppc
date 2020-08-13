@@ -151,6 +151,7 @@ fn parse_all<'q>(files: impl Iterator<Item=(&'q RelativePath, &'q str)>) -> Resu
                     }
                 },
                 Item::Content(_) => {},
+                Item::Expr(_) => {}
             }
         }
     }
