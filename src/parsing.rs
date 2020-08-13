@@ -1,4 +1,5 @@
 use ra_syntax::{SyntaxToken, SyntaxKind, TextRange};
+use relative_path::{RelativePathBuf, RelativePath};
 
 pub fn expect_any(mut token: SyntaxToken, one_of: &[Expected]) -> Result<(SyntaxToken, usize), ParseErrorWithPos> {
     let optional_list: Vec<_> = one_of.iter().filter_map(|item| match item {
@@ -145,6 +146,8 @@ impl<'a> Expected<'a> {
 }
 
 pub enum ParseError {
+    SyntaxError,
+    TypeError,
     ExpectedNextToken,
     ExpectedOtherToken,
 }
@@ -167,8 +170,26 @@ impl ParseError {
     }
 }
 
+pub struct ParseErrorWithPosAndFile {
+    pub e: ParseError,
+    pub message: String,
+    pub range: TextRange,
+    pub file: RelativePathBuf,
+}
+
 pub struct ParseErrorWithPos {
     pub e: ParseError,
     pub message: String,
     pub range: TextRange,
+}
+
+impl ParseErrorWithPos {
+    pub fn with_file(self, relative_path: &RelativePath) -> ParseErrorWithPosAndFile {
+        ParseErrorWithPosAndFile {
+            e: self.e,
+            message: self.message,
+            range: self.range,
+            file: relative_path.to_owned(),
+        }
+    }
 }
