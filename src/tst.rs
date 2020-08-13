@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use crate::parsing::{ParseErrorWithPos, Expected, ParseError, ParseErrorWithPosAndFile};
 use crate::{parsing};
 use std::io::Write;
+use crate::runtime::{Stack, Varying};
 
 pub enum Range {
     Numeric { from: i64, to: i64 },
@@ -92,6 +93,21 @@ impl Expr {
         text == "for_range"
             || text == "end"
     }
+
+    pub fn write(&self, data: &str, templates: &HashMap<String, Template>, output: &mut impl Write, stack: &mut Stack) {
+        match self {
+            Expr::ForRange { range: Range::Numeric { from, to }, items, ident } => {
+                stack.push_named_value(ident, Varying::Integer(*from));
+                for i in *from..*to {
+                    stack.update_named_value(ident, Varying::Integer(i));
+                    for item in items {
+                        item.write(data, templates, output, stack);
+                    }
+                }
+                stack.pop_named_value(ident);
+            },
+        }
+    }
 }
 
 pub enum Item {
@@ -120,6 +136,19 @@ impl Item {
         trace!("parse as template invocation {:?}", token);
 
         Ok(Item::TemplateInvocation(TemplateInvocation::parse(token)?))
+    }
+
+    pub fn write(&self, data: &str, templates: &HashMap<String, Template>, output: &mut impl Write, stack: &mut Stack) {
+        match self {
+            Item::TemplateInvocation(inv) => {
+                match templates.get(&inv.name) {
+                    None => warn!("template not located by name {}", inv.name),
+                    Some(template) => write!(output, "{}", inv.produce(data, template, &*stack)).unwrap(),
+                }
+            },
+            Item::Content(c) => write!(output, "{}", c).unwrap(),
+            Item::Expr(e) => e.write(data, templates, output, stack),
+        }
     }
 }
 
@@ -169,18 +198,9 @@ impl TreeFile {
         })
     }
 
-    pub fn write(&self, data: &str, output: &mut impl Write) {
+    pub fn write(&self, data: &str, output: &mut impl Write, stack: &mut Stack) {
         for item in self.items.iter() {
-            match item {
-                Item::TemplateInvocation(inv) => {
-                    match self.templates.get(&inv.name) {
-                        None => warn!("template not located by name {}", inv.name),
-                        Some(template) => write!(output, "{}", inv.produce(data, template)).unwrap(),
-                    }
-                },
-                Item::Content(c) => write!(output, "{}", c).unwrap(),
-                Item::Expr(_) => {},
-            }
+            item.write(data, &self.templates, output, stack);
         }
     }
 }
@@ -387,8 +407,8 @@ impl Template {
 
     pub fn check_parameters_used(&self, data: &str) -> Result<(), ParseErrorWithPos> {
         let template = std::str::from_utf8(self.get_bytes(data)).expect("no utf8 issues");
-        for (range, arg) in self.lookup_args() {
-            if !template.contains(&arg) {
+        for (range, _, replacement) in self.lookup_args() {
+            if !template.contains(&replacement) {
                 return Err(
                     ParseError::TypeError
                         .with2(format!("parameter is not used in {:?}", self.name), range)
@@ -402,15 +422,15 @@ impl Template {
         &data.as_bytes()[self.template_start..self.template_end]
     }
 
-    pub fn lookup_args<'q>(&'q self) -> impl Iterator<Item=(TextRange, String)> + 'q {
+    pub fn lookup_args<'q>(&'q self) -> impl Iterator<Item=(TextRange, &'q str, String)> + 'q {
         self.args.iter()
-            .map(move |(range, arg_name)| (range.clone(), format!("<{}>", arg_name)))
+            .map(move |(range, arg_name)| (range.clone(), &arg_name[..], format!("<{}>", arg_name)))
     }
 }
 
 pub struct TemplateInvocation {
     pub name: String,
-    pub args: Vec<TextRange>,
+    pub args: Vec<Vec<SyntaxToken>>,
     pub name_range: TextRange,
     pub arg_range: TextRange,
 }
@@ -438,13 +458,12 @@ impl TemplateInvocation {
         'main: loop {
             let start_token = token.clone();
             let mut last_token = token.clone();
-            let mut arg_start = None;
-            let mut arg_end = None;
+            let mut arg_tokens: Vec<SyntaxToken> = Vec::new();
 
             'consume: loop {
                 if token.kind() == SyntaxKind::COMMA {
-                    if let (Some(start), Some(end)) = (arg_start, arg_end) {
-                        args.push(TextRange::new(start, end));
+                    if arg_tokens.len() > 0 {
+                        args.push(arg_tokens);
                         token = parsing::expect_next(token)?;
                         break 'consume;
                     } else {
@@ -454,18 +473,15 @@ impl TemplateInvocation {
                         ));
                     }
                 } else if token.kind() == SyntaxKind::R_PAREN {
-                    if let (Some(start), Some(end)) = (arg_start, arg_end) {
-                        args.push(TextRange::new(start, end));
+                    if arg_tokens.len() > 0 {
+                        args.push(arg_tokens);
                     }
                     args_end = token.prev_token().unwrap().text_range().end();
                     token = parsing::expect_next(token)?;
                     break 'main;
                 } else if token.kind() == SyntaxKind::WHITESPACE {
                 } else {
-                    if arg_start == None {
-                        arg_start = Some(token.text_range().start());
-                    }
-                    arg_end = Some(token.text_range().end())
+                    arg_tokens.push(token.clone());
                 }
                 last_token = token.clone();
                 token = parsing::expect_next(token)?;
@@ -482,7 +498,7 @@ impl TemplateInvocation {
         })
     }
 
-    pub fn produce(&self, data: &str, template: &Template) -> String {
+    pub fn produce(&self, data: &str, template: &Template, stack: &Stack) -> String {
         let input_bytes = template.get_bytes(data);
         let (bytes, start_newline) = if input_bytes.starts_with(b"\n") {
             (&input_bytes[1..], &input_bytes[..1])
@@ -511,9 +527,16 @@ impl TemplateInvocation {
         }
 
         let mut replacements = HashMap::new();
-        for (replace_text, arg_value) in template.lookup_args().zip(self.args.iter()) {
-            let value_text = &data.as_bytes()[u32::from(arg_value.start()) as usize..u32::from(arg_value.end()) as usize];
-            replacements.insert(replace_text, String::from_utf8_lossy(value_text).into_owned());
+        for ((_arg_token, _parameter, search), arg_value) in template.lookup_args().zip(self.args.iter()) {
+            if let (1, SyntaxKind::IDENT, ident) = (arg_value.len(), arg_value[0].kind(), arg_value[0].text()) {
+                if let Some(value) = stack.get_named(ident.as_str()) {
+                    replacements.insert(search, value.to_string());
+                    continue;
+                }
+            }
+
+            let value_text = &data.as_bytes()[u32::from(arg_value[0].text_range().start()) as usize..u32::from(arg_value[arg_value.len() - 1].text_range().end()) as usize];
+            replacements.insert(search, String::from_utf8_lossy(value_text).into_owned());
         }
 
         let adjusted_template_bytes = adjusted_template.as_bytes();
@@ -524,7 +547,7 @@ impl TemplateInvocation {
         'replace: loop {
             let bytes_at_i = &adjusted_template_bytes[i..];
 
-            for ((_, search), replace) in replacements.iter() {
+            for (search, replace) in replacements.iter() {
                 let search_as_bytes = search.as_bytes();
                 if bytes_at_i.starts_with(search.as_bytes()) {
                     final_template.push_str(std::str::from_utf8(&adjusted_template_bytes[block_start..i]).expect("no utf8 problems"));

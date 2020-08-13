@@ -5,6 +5,7 @@ use std::path::{PathBuf};
 pub mod error;
 pub mod parsing;
 pub mod tst;
+pub mod runtime;
 
 #[macro_use]
 extern crate log;
@@ -16,6 +17,7 @@ use relative_path::{RelativePathBuf, RelativePath};
 use crate::tst::{TreeFile, Item};
 use crate::parsing::{ParseErrorWithPosAndFile, ParseError};
 use std::io::Write;
+use crate::runtime::Stack;
 
 /// Preprocessor
 #[derive(gumdrop::Options)]
@@ -80,7 +82,8 @@ fn main() {
         writeln!(&mut output_file_contents, "// AUTO-GENERATED from {}", rel_path).unwrap();
         writeln!(&mut output_file_contents).unwrap();
 
-        file.parsed.write(&file.content, &mut output_file_contents);
+        let mut stack = Stack::new();
+        file.parsed.write(&file.content, &mut output_file_contents, &mut stack);
 
         let mut file = std::fs::OpenOptions::new()
             .create(true)
