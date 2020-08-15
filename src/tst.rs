@@ -4,9 +4,10 @@ use relative_path::{RelativePathBuf, RelativePath};
 use ra_syntax::{TextRange, ast, AstNode, SyntaxKind, SyntaxToken};
 use std::collections::HashMap;
 use crate::parsing::{ParseErrorWithPos, Expected, ParseError, ParseErrorWithPosAndFile};
-use crate::{parsing};
+use crate::{parsing, ParseConfig};
 use std::io::Write;
 use crate::runtime::{Stack, Varying};
+use itertools::Itertools;
 
 pub enum Range {
     Numeric { from: i64, to: i64 },
@@ -94,14 +95,14 @@ impl Expr {
             || text == "end"
     }
 
-    pub fn write(&self, data: &str, templates: &HashMap<String, Template>, output: &mut impl Write, stack: &mut Stack) -> Result<(), ParseErrorWithPos> {
+    pub fn write(&self, data: &str, tmp_data: Option<&str>, generation_point: &GenerationPoint, output: &mut impl Write, stack: &mut Stack) -> Result<(), ParseErrorWithPos> {
         match self {
             Expr::ForRange { range: Range::Numeric { from, to }, items, ident } => {
                 stack.push_named_value(ident, Varying::Integer(*from));
                 for i in *from..*to {
                     stack.update_named_value(ident, Varying::Integer(i));
                     for item in items {
-                        item.write(data, templates, output, stack)?;
+                        item.write(data, tmp_data, generation_point, output, stack)?;
                     }
                 }
                 stack.pop_named_value(ident);
@@ -140,34 +141,78 @@ impl Item {
         Ok(Item::TemplateInvocation(TemplateInvocation::parse(token)?))
     }
 
-    pub fn write(&self, data: &str, templates: &HashMap<String, Template>, output: &mut impl Write, stack: &mut Stack) -> Result<(), ParseErrorWithPos> {
+    pub fn write(&self, data: &str, tmp_data: Option<&str>, generation_point: &GenerationPoint, output: &mut impl Write, stack: &mut Stack) -> Result<(), ParseErrorWithPos> {
         match self {
             Item::TemplateInvocation(inv) => {
-                match templates.get(&inv.name) {
+                match generation_point.find_template(&inv.name, data, tmp_data) {
                     None => unreachable!("template not located by name {}", inv.name),
-                    Some(template) => write!(output, "{}", inv.produce(data, template, &*stack)?).unwrap(),
+                    Some((template, template_data)) => write!(output, "{}", inv.produce(data, template_data, template, &*stack)?).unwrap(),
                 }
             },
             Item::Content(c) => write!(output, "{}", c).unwrap(),
-            Item::Expr(e) => e.write(data, templates, output, stack)?,
+            Item::Expr(e) => e.write(data, tmp_data, generation_point, output, stack)?,
         }
 
         Ok(())
     }
 }
 
-pub struct TreeFile {
+#[derive(Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
+pub struct ModPath(String);
+
+impl AsRef<str> for ModPath {
+    fn as_ref(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
+impl ModPath {
+    pub fn from_generator_path(path: &RelativePath, config: ParseConfig) -> ModPath {
+        let parent = path.parent().unwrap();
+        let file_name = path.file_name().unwrap();
+        let file_name_stripped = file_name.strip_suffix(config.gen_file_suffix).unwrap();
+        let mut path = parent.components().map(|c| c.as_str()).join("::");
+        path.push_str("::");
+        path.push_str(file_name_stripped);
+        ModPath(path)
+    }
+}
+
+pub struct GenerationPoint {
+    pub generator: GenerationFile,
+    pub template: Option<TemplateFile>,
+}
+
+pub struct GenerationFile {
     pub relative_path: RelativePathBuf,
     pub items: Vec<Item>,
     pub templates: HashMap<String, Template>,
 }
 
-impl TreeFile {
-    pub fn parse(relative_path: &RelativePath, data: &str) -> Result<TreeFile, ParseErrorWithPosAndFile> {
+pub struct TemplateFile {
+    pub relative_path: RelativePathBuf,
+    pub templates: HashMap<String, Template>,
+}
 
+impl GenerationPoint {
+    pub fn find_template<'q, 'p>(&'p self, name: &str, data: &'q str, tmp_data: Option<&'q str>) -> Option<(&'p Template, &'q str)> {
+        if let Some(t) = self.generator.templates.get(name) {
+            return Some((t, data));
+        }
+
+        if let (&Some(ref tf), Some(data)) = (&self.template, tmp_data) {
+            if let Some(t) = tf.templates.get(name) {
+                return Some((t, data));
+            }
+        }
+
+        None
+    }
+
+    fn parse_additional_templates(relative_path: &RelativePath, data: &str) -> Result<HashMap<String, Template>, ParseErrorWithPosAndFile> {
         let parsed = ra_syntax::SourceFile::parse(&data);
 
-        trace!("error count {:?}", parsed.errors().len());
+        trace!("error count {:?} {:?}", relative_path, parsed.errors().len());
 
         for e in parsed.errors() {
             return Err(
@@ -195,16 +240,61 @@ impl TreeFile {
 
         let mut remaining_items: &[ast::Item] = &items;
 
-        Ok(TreeFile {
-            relative_path: relative_path.to_owned(),
-            items: parse_items(data, &mut remaining_items, Some(&mut templates), ParseItemsEnd::EndOfFile).map_err(|e| e.with_file(relative_path))?,
-            templates,
+        parse_only_templates(&mut remaining_items, &mut templates).map_err(|e| e.with_file(relative_path))?;
+
+        Ok(templates)
+    }
+
+    pub fn parse(relative_path: &RelativePath, data: &str, tmp_relative_path: Option<&RelativePath>, tmp_data: Option<&str>) -> Result<GenerationPoint, ParseErrorWithPosAndFile> {
+        let parsed = ra_syntax::SourceFile::parse(&data);
+
+        trace!("error count {:?} {:?}", relative_path, parsed.errors().len());
+
+        for e in parsed.errors() {
+            return Err(
+                ParseError::SyntaxError
+                    .with2(e.to_string(), e.range())
+                    .with_file(relative_path)
+            );
+        }
+
+        let tree = parsed.tree();
+        let mut templates = HashMap::new();
+        let mut items = Vec::new();
+
+        for node in tree.syntax().descendants() {
+            match_ast! {
+                match node {
+                    ast::Item(it) => {
+                        items.push(it);
+                    },
+                    _ => (),
+                }
+            }
+        }
+
+        let mut remaining_items: &[ast::Item] = &items;
+
+        Ok(GenerationPoint {
+            template: if let (Some(tmp_relative_path), Some(tmp_data)) = (tmp_relative_path, tmp_data) {
+                Some(TemplateFile {
+                    templates: Self::parse_additional_templates(tmp_relative_path, tmp_data)?,
+                    relative_path: tmp_relative_path.to_relative_path_buf()
+                })
+            } else {
+                None
+            },
+            generator: GenerationFile {
+                relative_path: relative_path.to_owned(),
+                items: parse_items(data, &mut remaining_items, Some(&mut templates), ParseItemsEnd::EndOfFile).map_err(|e| e.with_file(relative_path))?,
+                templates,
+            }
         })
     }
 
-    pub fn write(&self, data: &str, output: &mut impl Write, stack: &mut Stack) -> Result<(), ParseErrorWithPos> {
-        for item in self.items.iter() {
-            item.write(data, &self.templates, output, stack)?;
+    pub fn write(&self, data: &str, tmp_data: Option<&str>, output: &mut impl Write, stack: &mut Stack) -> Result<(), ParseErrorWithPos> {
+        for item in self.generator.items.iter() {
+            item.write(data, tmp_data, &self, output, stack)?;
         }
         Ok(())
     }
@@ -214,6 +304,42 @@ impl TreeFile {
 enum ParseItemsEnd {
     EndOfFile,
     EndMacro { start: SyntaxToken },
+}
+
+fn parse_only_templates(remaining_items: &mut &[ast::Item], templates: &mut HashMap<String, Template>) -> Result<(), ParseErrorWithPos> {
+    trace!("==> parse_templates remaining={}", remaining_items.len());
+
+    while remaining_items.len() > 0 {
+        match remaining_items.first().unwrap() {
+            ast::Item::MacroCall(ref macro_call) => {
+                if let Some(_) = macro_call.is_macro_rules() {
+                    trace!("parse as template {:?}", macro_call);
+                    match Template::parse(&macro_call) {
+                        Ok(template) => {
+                            templates.insert(template.name.clone(), template);
+                        },
+                        Err(e) => {
+                            return Err(
+                                ParseError::SyntaxError
+                                    .with2(e.message, e.range)
+                            );
+                        },
+                    }
+                } else {
+                    return Err(ParseError::ExpectedOtherToken
+                        .with("only \"macro_rules\" macro is allowed inside a template file", macro_call.syntax().text_range()));
+                }
+            }
+            other => return Err(ParseError::ExpectedOtherToken
+                .with("only \"macro_rules\" is allowed inside a template file", other.syntax().text_range())),
+        }
+
+        *remaining_items = &remaining_items[1..];
+    }
+
+    trace!("<== parse_templates remaining={}", remaining_items.len());
+
+    Ok(())
 }
 
 fn parse_items(data: &str, remaining_items: &mut &[ast::Item], mut templates: Option<&mut HashMap<String, Template>>, end_type: ParseItemsEnd) -> Result<Vec<Item>, ParseErrorWithPos> {
@@ -334,6 +460,10 @@ impl Template {
         trace!("name {:?}", name);
 
         let mut start_token = macro_call.syntax().first_token().unwrap();
+        while start_token.kind() != SyntaxKind::IDENT {
+            start_token = parsing::expect_next(start_token)?;
+        }
+
         let mut end_token = macro_call.syntax().last_token().unwrap();
 
         start_token = parsing::consume_expected_list_forward(start_token, &[
@@ -502,8 +632,8 @@ impl TemplateInvocation {
         })
     }
 
-    pub fn produce(&self, data: &str, template: &Template, stack: &Stack) -> Result<String, ParseErrorWithPos> {
-        let input_bytes = template.get_bytes(data);
+    pub fn produce(&self, inv_data: &str, template_data: &str, template: &Template, stack: &Stack) -> Result<String, ParseErrorWithPos> {
+        let input_bytes = template.get_bytes(template_data);
         let (bytes, start_newline) = if input_bytes.starts_with(b"\n") {
             (&input_bytes[1..], &input_bytes[..1])
         } else if input_bytes.starts_with(b"\r\n") {
@@ -543,7 +673,7 @@ impl TemplateInvocation {
                 }
             }
 
-            let value_text = &data.as_bytes()[u32::from(arg_value[0].text_range().start()) as usize..u32::from(arg_value[arg_value.len() - 1].text_range().end()) as usize];
+            let value_text = &inv_data.as_bytes()[u32::from(arg_value[0].text_range().start()) as usize..u32::from(arg_value[arg_value.len() - 1].text_range().end()) as usize];
             replacements.insert(search, String::from_utf8_lossy(value_text).into_owned());
         }
 
