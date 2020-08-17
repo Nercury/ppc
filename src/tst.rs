@@ -350,9 +350,6 @@ fn parse_items(data: &str, remaining_items: &mut &[ReltNode], mut templates: Opt
         Module,
     }
 
-    let mut something_was_printed = false;
-    let mut last_item_end = None;
-
     while if end_type == ParseItemsEnd::EndOfItems {
         remaining_items.len() > 0
     } else {
@@ -376,7 +373,6 @@ fn parse_items(data: &str, remaining_items: &mut &[ReltNode], mut templates: Opt
                         },
                     }
                     state = State::Done;
-                    something_was_printed = true;
                 } else {
                     return Err(ParseError::ExpectedOtherToken.with("macro_rules is not allowed inside blocks", macro_call.syntax().text_range()));
                 }
@@ -397,7 +393,6 @@ fn parse_items(data: &str, remaining_items: &mut &[ReltNode], mut templates: Opt
             State::NotMacroRulesButMacro => {
                 trace!("parse as item {:?}", remaining_items[0].syntax());
                 output_items.push(Item::parse_from_macro(data,remaining_items)?);
-                something_was_printed = true;
             },
             State::Module => {
                 if let ReltNode::Mod(module) = remaining_items.first().unwrap() {
@@ -442,13 +437,8 @@ fn parse_items(data: &str, remaining_items: &mut &[ReltNode], mut templates: Opt
 
                     trace!("output content {:?}", it.syntax());
                     output_items.push(Item::Content(it.syntax().to_string()));
-                    something_was_printed = true;
                 }
             },
-        }
-
-        if let Some(it) = remaining_items.first() {
-            last_item_end = it.syntax().last_token().map(|token| u32::from(token.text_range().end()));
         }
 
         *remaining_items = &remaining_items[1..];
