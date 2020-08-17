@@ -4,10 +4,11 @@ use relative_path::{RelativePathBuf, RelativePath};
 use ra_syntax::{TextRange, ast, AstNode, SyntaxKind, SyntaxToken};
 use std::collections::HashMap;
 use crate::parsing::{ParseErrorWithPos, Expected, ParseError, ParseErrorWithPosAndFile};
-use crate::{parsing, ParseConfig};
+use crate::{parsing, ParseConfig, relt};
 use std::io::Write;
 use crate::runtime::{Stack, Varying};
 use itertools::Itertools;
+use crate::relt::{ReltNode};
 
 pub enum Range {
     Numeric { from: i64, to: i64 },
@@ -18,7 +19,7 @@ pub enum Expr {
 }
 
 impl Expr {
-    pub fn parse_from_macro(data: &str, remaining: &mut &[ast::Item], token: SyntaxToken) -> Result<Expr, ParseErrorWithPos> {
+    pub fn parse_from_macro(data: &str, remaining: &mut &[ReltNode], token: SyntaxToken) -> Result<Expr, ParseErrorWithPos> {
         Ok(match token.text().as_str() {
             "for_range" => Self::parse_for_range(data, remaining, token)?,
             "end" => return Err(ParseError::ExpectedOtherToken.with("no matching start", token.text_range())),
@@ -26,7 +27,7 @@ impl Expr {
         })
     }
 
-    fn parse_for_range(data: &str, remaining: &mut &[ast::Item], mut token: SyntaxToken) -> Result<Expr, ParseErrorWithPos> {
+    fn parse_for_range(data: &str, remaining: &mut &[ReltNode], mut token: SyntaxToken) -> Result<Expr, ParseErrorWithPos> {
         let expr_start_token = token;
         token = parsing::expect_next(expr_start_token.clone())?;
         token = parsing::consume_expected_list_forward(token, &[
@@ -120,10 +121,10 @@ pub enum Item {
 }
 
 impl Item {
-    pub fn parse_from_macro(data: &str, remaining: &mut &[ast::Item]) -> Result<Item, ParseErrorWithPos> {
+    pub fn parse_from_macro(data: &str, remaining: &mut &[ReltNode]) -> Result<Item, ParseErrorWithPos> {
         let macro_call = match remaining.first().unwrap() {
-            ast::Item::MacroCall(ref m) => m.clone(),
-            _ => unreachable!(),
+            ReltNode::TemplateInvocation(mc) => mc,
+            _ => unreachable!("expected ReltNode::TemplateInvocation"),
         };
 
         let mut token = macro_call.syntax().first_token().unwrap();
@@ -225,20 +226,8 @@ impl GenerationPoint {
         let tree = parsed.tree();
 
         let mut templates = HashMap::new();
-        let mut items = Vec::new();
-
-        for node in tree.syntax().descendants() {
-            match_ast! {
-                match node {
-                    ast::Item(it) => {
-                        items.push(it);
-                    },
-                    _ => (),
-                }
-            }
-        }
-
-        let mut remaining_items: &[ast::Item] = &items;
+        let items: Vec<ReltNode> = relt::collect(tree);
+        let mut remaining_items: &[ReltNode] = &items;
 
         parse_only_templates(&mut remaining_items, &mut templates).map_err(|e| e.with_file(relative_path))?;
 
@@ -260,20 +249,8 @@ impl GenerationPoint {
 
         let tree = parsed.tree();
         let mut templates = HashMap::new();
-        let mut items = Vec::new();
-
-        for node in tree.syntax().descendants() {
-            match_ast! {
-                match node {
-                    ast::Item(it) => {
-                        items.push(it);
-                    },
-                    _ => (),
-                }
-            }
-        }
-
-        let mut remaining_items: &[ast::Item] = &items;
+        let items: Vec<ReltNode> = relt::collect(tree);
+        let mut remaining_items: &[ReltNode] = &items;
 
         Ok(GenerationPoint {
             template: if let (Some(tmp_relative_path), Some(tmp_data)) = (tmp_relative_path, tmp_data) {
@@ -306,32 +283,33 @@ enum ParseItemsEnd {
     EndMacro { start: SyntaxToken },
 }
 
-fn parse_only_templates(remaining_items: &mut &[ast::Item], templates: &mut HashMap<String, Template>) -> Result<(), ParseErrorWithPos> {
+fn parse_only_templates(remaining_items: &mut &[ReltNode], templates: &mut HashMap<String, Template>) -> Result<(), ParseErrorWithPos> {
     trace!("==> parse_templates remaining={}", remaining_items.len());
 
     while remaining_items.len() > 0 {
         match remaining_items.first().unwrap() {
-            ast::Item::MacroCall(ref macro_call) => {
-                if let Some(_) = macro_call.is_macro_rules() {
-                    trace!("parse as template {:?}", macro_call);
-                    match Template::parse(&macro_call) {
-                        Ok(template) => {
-                            templates.insert(template.name.clone(), template);
-                        },
-                        Err(e) => {
-                            return Err(
-                                ParseError::SyntaxError
-                                    .with2(e.message, e.range)
-                            );
-                        },
-                    }
-                } else {
-                    return Err(ParseError::ExpectedOtherToken
-                        .with("only \"macro_rules\" macro is allowed inside a template file", macro_call.syntax().text_range()));
+            ReltNode::Template(ref macro_call) => {
+                trace!("parse as template {:?}", macro_call);
+                match Template::parse(&macro_call) {
+                    Ok(template) => {
+                        templates.insert(template.name.clone(), template);
+                    },
+                    Err(e) => {
+                        return Err(
+                            ParseError::SyntaxError
+                                .with2(e.message, e.range)
+                        );
+                    },
                 }
-            }
-            other => return Err(ParseError::ExpectedOtherToken
-                .with("only \"macro_rules\" is allowed inside a template file", other.syntax().text_range())),
+            },
+            ReltNode::TemplateInvocation(macro_call) => {
+                return Err(ParseError::ExpectedOtherToken
+                    .with("only \"macro_rules\" macro is allowed inside a template file", macro_call.syntax().text_range()));
+            },
+            ReltNode::OtherItem(other) => {
+                return Err(ParseError::ExpectedOtherToken
+                    .with("only \"macro_rules\" is allowed inside a template file", other.text_range()));
+            },
         }
 
         *remaining_items = &remaining_items[1..];
@@ -342,7 +320,7 @@ fn parse_only_templates(remaining_items: &mut &[ast::Item], templates: &mut Hash
     Ok(())
 }
 
-fn parse_items(data: &str, remaining_items: &mut &[ast::Item], mut templates: Option<&mut HashMap<String, Template>>, end_type: ParseItemsEnd) -> Result<Vec<Item>, ParseErrorWithPos> {
+fn parse_items(data: &str, remaining_items: &mut &[ReltNode], mut templates: Option<&mut HashMap<String, Template>>, end_type: ParseItemsEnd) -> Result<Vec<Item>, ParseErrorWithPos> {
     trace!("==> parse_items remaining={}", remaining_items.len());
 
     let mut output_items = Vec::new();
@@ -363,8 +341,8 @@ fn parse_items(data: &str, remaining_items: &mut &[ast::Item], mut templates: Op
     } {
         let state: State;
 
-        if let Some(ast::Item::MacroCall(ref macro_call)) = remaining_items.first() {
-            if let Some(_) = macro_call.is_macro_rules() {
+        match remaining_items.first().unwrap() {
+            ReltNode::Template(macro_call) => {
                 if let Some(ref mut templates) = templates {
                     trace!("parse as template {:?}", macro_call);
                     match Template::parse(&macro_call) {
@@ -383,12 +361,13 @@ fn parse_items(data: &str, remaining_items: &mut &[ast::Item], mut templates: Op
                 } else {
                     return Err(ParseError::ExpectedOtherToken.with("macro_rules is not allowed inside blocks", macro_call.syntax().text_range()));
                 }
-            } else {
+            },
+            ReltNode::TemplateInvocation(_) => {
                 state = State::NotMacroRulesButMacro;
-            }
-
-        } else {
-            state = State::NotMacro;
+            },
+            ReltNode::OtherItem(_) => {
+                state = State::NotMacro;
+            },
         }
 
         match state {
@@ -407,8 +386,8 @@ fn parse_items(data: &str, remaining_items: &mut &[ast::Item], mut templates: Op
                         output_items.push(Item::Content(snippet));
                     }
 
-                    trace!("output content {:?}", it);
-                    output_items.push(Item::Content(it.to_string()));
+                    trace!("output content {:?}", it.syntax());
+                    output_items.push(Item::Content(it.syntax().to_string()));
                     something_was_printed = true;
                 }
             },
@@ -746,8 +725,8 @@ impl<'a> Iterator for LinesIter<'a> {
     }
 }
 
-fn item_macro_name_equals(item: &ast::Item, value: &str) -> bool {
-    if let ast::Item::MacroCall(ref macro_call) = item {
+fn item_macro_name_equals(item: &ReltNode, value: &str) -> bool {
+    if let ReltNode::TemplateInvocation(ref macro_call) = item {
         if let Some(mut token) = macro_call.syntax().first_token() {
             while token.kind() != SyntaxKind::IDENT {
                 token = match token.next_token() {

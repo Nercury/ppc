@@ -5,6 +5,7 @@ use std::path::{PathBuf};
 pub mod error;
 pub mod parsing;
 pub mod tst;
+pub mod relt;
 pub mod runtime;
 
 #[macro_use]
