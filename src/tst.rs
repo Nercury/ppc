@@ -429,12 +429,6 @@ fn parse_items(data: &str, remaining_items: &mut &[ReltNode], mut templates: Opt
                         output_items.push(Item::Content(ident));
                     }
 
-                    // // whitespace handling, leave the exact space tokens from the previous item
-                    // if let (true, Some(end)) = (something_was_printed, last_item_end) {
-                    //     let snippet = String::from_utf8_lossy(&data.as_bytes()[end as usize..start as usize]).into_owned();
-                    //     output_items.push(Item::Content(snippet));
-                    // }
-
                     trace!("output content {:?}", it.syntax());
                     output_items.push(Item::Content(it.syntax().to_string()));
                 }
