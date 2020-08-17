@@ -59,39 +59,37 @@ impl ReltMod {
 
     pub fn start_string_and_indent(&self, data: &str) -> Result<(String, Option<String>), ParseErrorWithPos> {
         Ok(if let Some(mut token) = self.syntax.first_token() {
-            let mut start = token.text_range().start();
+            let mut start = u32::from(token.text_range().start()) as usize;
             if let Some(previous_token) = token.prev_token() {
                 if previous_token.kind() == SyntaxKind::WHITESPACE {
-                    start = previous_token.text_range().start();
+                    start = u32::from(previous_token.text_range().start()) as usize;
                 }
             }
 
             while token.kind() != SyntaxKind::L_CURLY {
                 token = parsing::expect_next(token)?;
             }
+            let curly_end = u32::from(token.text_range().end()) as usize;
+
             token = parsing::expect_next(token)?;
-            let mut ws_start = None;
-            while token.kind() == SyntaxKind::WHITESPACE {
-                ws_start = Some(u32::from(token.text_range().start()) as usize);
-                token = parsing::expect_next(token)?;
-            }
-
-            let mut end = u32::from(token.text_range().start()) as usize;
             let mut ident = None;
+            if token.kind() == SyntaxKind::WHITESPACE {
+                let ws_start = u32::from(token.text_range().start()) as usize;
+                let ws_end = u32::from(token.text_range().end()) as usize;
 
-            if let Some(ws_start_pos) = ws_start {
-                let ws_range = &data.as_bytes()[ws_start_pos..end];
+                let ws_range = &data.as_bytes()[ws_start..ws_end];
+
                 if let Some((pos, _)) = ws_range
                     .iter()
                     .enumerate()
                     .rev()
                     .filter(|(_, b)| **b == b'\n')
                     .next() {
-                    let ident_end = end;
-                    end -= ws_range.len() - pos - 1;
-                    let ident_start = end;
+
+                    let ident_start = ws_start + pos + 1;
+
                     ident = Some(String::from_utf8_lossy(&data.as_bytes()[
-                        ident_start .. ident_end
+                        ident_start .. ws_end
                     ]).into_owned())
                 }
             }
@@ -99,7 +97,7 @@ impl ReltMod {
             debug!("ident {:?}", ident);
 
             (String::from_utf8_lossy(&data.as_bytes()[
-                u32::from(start) as usize .. end
+                start .. curly_end
             ]).into_owned(), ident)
         } else {
             (String::new(), None)

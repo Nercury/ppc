@@ -105,7 +105,7 @@ fn main() {
             &file.content,
             file.tmp_content.as_ref().map(|s| &s[..]),
             &mut output_file_contents,
-            &mut stack)
+            &mut stack, None)
                 .map_err(|e| e.with_file(&generator_file_rel_path)) {
             println!("in file {:?}", e.file);
             let data = all_files.get(&e.file).unwrap();
@@ -233,6 +233,9 @@ fn validate_items(data: &str, tmp_data: Option<&str>, generator_items: &[Item], 
                 Expr::ForRange { items, .. } => {
                     validate_items(data, tmp_data, &items, generation_point)?;
                 },
+            },
+            Item::Block { items: block_items, .. } => {
+                validate_items(data, tmp_data, &block_items, generation_point)?;
             }
         }
     }

@@ -96,14 +96,14 @@ impl Expr {
             || text == "end"
     }
 
-    pub fn write(&self, data: &str, tmp_data: Option<&str>, generation_point: &GenerationPoint, output: &mut impl Write, stack: &mut Stack) -> Result<(), ParseErrorWithPos> {
+    pub fn write(&self, data: &str, tmp_data: Option<&str>, generation_point: &GenerationPoint, output: &mut impl Write, stack: &mut Stack, parent_ident: Option<&str>) -> Result<(), ParseErrorWithPos> {
         match self {
             Expr::ForRange { range: Range::Numeric { from, to }, items, ident } => {
                 stack.push_named_value(ident, Varying::Integer(*from));
                 for i in *from..*to {
                     stack.update_named_value(ident, Varying::Integer(i));
                     for item in items {
-                        item.write(data, tmp_data, generation_point, output, stack)?;
+                        item.write(data, tmp_data, generation_point, output, stack, parent_ident)?;
                     }
                 }
                 stack.pop_named_value(ident);
@@ -118,6 +118,7 @@ pub enum Item {
     TemplateInvocation(TemplateInvocation),
     Expr(Expr),
     Content(String),
+    Block { items: Vec<Item>, ident: Option<String> },
 }
 
 impl Item {
@@ -142,16 +143,29 @@ impl Item {
         Ok(Item::TemplateInvocation(TemplateInvocation::parse(token)?))
     }
 
-    pub fn write(&self, data: &str, tmp_data: Option<&str>, generation_point: &GenerationPoint, output: &mut impl Write, stack: &mut Stack) -> Result<(), ParseErrorWithPos> {
+    pub fn write(&self, data: &str, tmp_data: Option<&str>, generation_point: &GenerationPoint, output: &mut impl Write, stack: &mut Stack, parent_ident: Option<&str>) -> Result<(), ParseErrorWithPos> {
         match self {
             Item::TemplateInvocation(inv) => {
                 match generation_point.find_template(&inv.name, data, tmp_data) {
                     None => unreachable!("template not located by name {}", inv.name),
-                    Some((template, template_data)) => write!(output, "{}", inv.produce(data, template_data, template, &*stack)?).unwrap(),
+                    Some((template, template_data)) => {
+                        write!(output, "{}", inv.produce(data, template_data, template, &*stack, parent_ident)?).unwrap()
+                    },
                 }
             },
-            Item::Content(c) => write!(output, "{}", c).unwrap(),
-            Item::Expr(e) => e.write(data, tmp_data, generation_point, output, stack)?,
+            Item::Content(c) => {
+                // if let Some(parent_ident) = parent_ident {
+                //     write!(output, "{}{}", parent_ident, c).unwrap()
+                // } else {
+                    write!(output, "{}", c).unwrap()
+                // }
+            },
+            Item::Expr(e) => e.write(data, tmp_data, generation_point, output, stack, parent_ident)?,
+            Item::Block { items, ident } => {
+                for item in items {
+                    item.write(data, tmp_data, generation_point, output, stack, ident.as_ref().map(|s| &s[..]))?;
+                }
+            }
         }
 
         Ok(())
@@ -263,15 +277,15 @@ impl GenerationPoint {
             },
             generator: GenerationFile {
                 relative_path: relative_path.to_owned(),
-                items: parse_items(data, &mut remaining_items, Some(&mut templates), ParseItemsEnd::EndOfFile).map_err(|e| e.with_file(relative_path))?,
+                items: parse_items(data, &mut remaining_items, Some(&mut templates), ParseItemsEnd::EndOfItems).map_err(|e| e.with_file(relative_path))?,
                 templates,
             }
         })
     }
 
-    pub fn write(&self, data: &str, tmp_data: Option<&str>, output: &mut impl Write, stack: &mut Stack) -> Result<(), ParseErrorWithPos> {
+    pub fn write(&self, data: &str, tmp_data: Option<&str>, output: &mut impl Write, stack: &mut Stack, parent_ident: Option<&str>) -> Result<(), ParseErrorWithPos> {
         for item in self.generator.items.iter() {
-            item.write(data, tmp_data, &self, output, stack)?;
+            item.write(data, tmp_data, &self, output, stack, parent_ident)?;
         }
         Ok(())
     }
@@ -279,7 +293,7 @@ impl GenerationPoint {
 
 #[derive(Eq, PartialEq)]
 enum ParseItemsEnd {
-    EndOfFile,
+    EndOfItems,
     EndMacro { start: SyntaxToken },
 }
 
@@ -339,7 +353,7 @@ fn parse_items(data: &str, remaining_items: &mut &[ReltNode], mut templates: Opt
     let mut something_was_printed = false;
     let mut last_item_end = None;
 
-    while if end_type == ParseItemsEnd::EndOfFile {
+    while if end_type == ParseItemsEnd::EndOfItems {
         remaining_items.len() > 0
     } else {
         remaining_items.len() > 0 && !item_macro_name_equals(&(remaining_items[0]), "end")
@@ -388,19 +402,43 @@ fn parse_items(data: &str, remaining_items: &mut &[ReltNode], mut templates: Opt
             State::Module => {
                 if let ReltNode::Mod(module) = remaining_items.first().unwrap() {
                     trace!("parse as mod {:?}", module.syntax);
-                    let (start_string, _ident) = module.start_string_and_indent(data)?;
+                    let (start_string, ident) = module.start_string_and_indent(data)?;
                     output_items.push(Item::Content(start_string));
+                    output_items.push(Item::Block { items: parse_items(data, &mut &module.items[..], None, ParseItemsEnd::EndOfItems)?, ident });
                     output_items.push(Item::Content(module.end_string(data)?));
                 }
             }
             State::NotMacro => {
                 let it = remaining_items.first().unwrap();
-                if let Some(start) = it.syntax().first_token().map(|token| u32::from(token.text_range().start())) {
-                    // whitespace handling, leave the exact space tokens from the previous item
-                    if let (true, Some(end)) = (something_was_printed, last_item_end) {
-                        let snippet = String::from_utf8_lossy(&data.as_bytes()[end as usize..start as usize]).into_owned();
-                        output_items.push(Item::Content(snippet));
+                if let Some(token) = it.syntax().first_token() {
+                    let ws_token = if token.kind() == SyntaxKind::WHITESPACE {
+                        Some(token)
+                    } else {
+                        if let Some(prev_token) = token.prev_token() {
+                            if prev_token.kind() == SyntaxKind::WHITESPACE {
+                                Some(prev_token)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    };
+
+                    if let Some(ws_token) = ws_token {
+                        let ws_start = u32::from(ws_token.text_range().start()) as usize;
+                        let ws_end = u32::from(ws_token.text_range().end()) as usize;
+                        let ident = String::from_utf8_lossy(&data.as_bytes()[
+                            ws_start .. ws_end
+                            ]).into_owned();
+                        output_items.push(Item::Content(ident));
                     }
+
+                    // // whitespace handling, leave the exact space tokens from the previous item
+                    // if let (true, Some(end)) = (something_was_printed, last_item_end) {
+                    //     let snippet = String::from_utf8_lossy(&data.as_bytes()[end as usize..start as usize]).into_owned();
+                    //     output_items.push(Item::Content(snippet));
+                    // }
 
                     trace!("output content {:?}", it.syntax());
                     output_items.push(Item::Content(it.syntax().to_string()));
@@ -627,7 +665,7 @@ impl TemplateInvocation {
         })
     }
 
-    pub fn produce(&self, inv_data: &str, template_data: &str, template: &Template, stack: &Stack) -> Result<String, ParseErrorWithPos> {
+    pub fn produce(&self, inv_data: &str, template_data: &str, template: &Template, stack: &Stack, parent_ident: Option<&str>) -> Result<String, ParseErrorWithPos> {
         let input_bytes = template.get_bytes(template_data);
         let (bytes, start_newline) = if input_bytes.starts_with(b"\n") {
             (&input_bytes[1..], &input_bytes[..1])
@@ -648,6 +686,10 @@ impl TemplateInvocation {
 
         let mut adjusted_template = String::from_utf8_lossy(start_newline).into_owned();
         for line in LinesIter::new(bytes) {
+            if let Some(parent_ident) = parent_ident {
+                adjusted_template.push_str(parent_ident);
+            }
+
             if line.starts_with(&whitespace_ident[..]) {
                 adjusted_template.push_str(std::str::from_utf8(&line[whitespace_ident.len()..]).expect("line from utf bytes"));
             } else {
