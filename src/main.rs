@@ -11,8 +11,6 @@ pub mod runtime;
 #[macro_use]
 extern crate log;
 
-#[macro_use]
-extern crate ra_syntax;
 use std::collections::HashMap;
 use relative_path::{RelativePathBuf};
 use crate::tst::{GenerationPoint, Item, Expr, ModPath};

@@ -306,6 +306,10 @@ fn parse_only_templates(remaining_items: &mut &[ReltNode], templates: &mut HashM
                 return Err(ParseError::ExpectedOtherToken
                     .with("only \"macro_rules\" macro is allowed inside a template file", macro_call.syntax().text_range()));
             },
+            ReltNode::Mod(relt::ReltMod { syntax, .. }) => {
+                return Err(ParseError::ExpectedOtherToken
+                    .with("only \"macro_rules\" macro is allowed inside a template file", syntax.text_range()));
+            },
             ReltNode::OtherItem(other) => {
                 return Err(ParseError::ExpectedOtherToken
                     .with("only \"macro_rules\" is allowed inside a template file", other.text_range()));
@@ -329,6 +333,7 @@ fn parse_items(data: &str, remaining_items: &mut &[ReltNode], mut templates: Opt
         Done,
         NotMacroRulesButMacro,
         NotMacro,
+        Module,
     }
 
     let mut something_was_printed = false;
@@ -365,7 +370,10 @@ fn parse_items(data: &str, remaining_items: &mut &[ReltNode], mut templates: Opt
             ReltNode::TemplateInvocation(_) => {
                 state = State::NotMacroRulesButMacro;
             },
-            ReltNode::OtherItem(_) => {
+            ReltNode::Mod(_) => {
+                state = State::Module;
+            }
+            _ => {
                 state = State::NotMacro;
             },
         }
@@ -377,6 +385,14 @@ fn parse_items(data: &str, remaining_items: &mut &[ReltNode], mut templates: Opt
                 output_items.push(Item::parse_from_macro(data,remaining_items)?);
                 something_was_printed = true;
             },
+            State::Module => {
+                if let ReltNode::Mod(module) = remaining_items.first().unwrap() {
+                    trace!("parse as mod {:?}", module.syntax);
+                    let (start_string, _ident) = module.start_string_and_indent(data)?;
+                    output_items.push(Item::Content(start_string));
+                    output_items.push(Item::Content(module.end_string(data)?));
+                }
+            }
             State::NotMacro => {
                 let it = remaining_items.first().unwrap();
                 if let Some(start) = it.syntax().first_token().map(|token| u32::from(token.text_range().start())) {
