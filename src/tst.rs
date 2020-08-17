@@ -149,7 +149,7 @@ impl Item {
                 match generation_point.find_template(&inv.name, data, tmp_data) {
                     None => unreachable!("template not located by name {}", inv.name),
                     Some((template, template_data)) => {
-                        write!(output, "{}", inv.produce(data, template_data, template, &*stack, parent_ident)?).unwrap()
+                        write!(output, "\n{}", inv.produce(data, template_data, template, &*stack, parent_ident)?).unwrap()
                     },
                 }
             },
