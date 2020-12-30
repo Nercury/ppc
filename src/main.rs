@@ -17,7 +17,7 @@ use crate::tst::{GenerationPoint, Item, Expr, ModPath};
 use crate::parsing::{ParseErrorWithPosAndFile, ParseError};
 use std::io::Write;
 use crate::runtime::Stack;
-use ra_syntax::SyntaxKind;
+use syntax::SyntaxKind;
 
 /// Preprocessor
 #[derive(gumdrop::Options)]

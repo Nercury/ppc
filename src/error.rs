@@ -1,4 +1,4 @@
-use ra_syntax::TextRange;
+use syntax::TextRange;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct Pos {

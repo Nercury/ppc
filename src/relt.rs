@@ -1,13 +1,13 @@
 //! Relevant parsed tree
 
-use ra_syntax::{ast, SyntaxNode, AstNode, SourceFile, SyntaxKind};
-use ra_syntax::ast::ModuleItemOwner;
+use syntax::{ast, SyntaxNode, AstNode, SourceFile, SyntaxKind};
+use syntax::ast::ModuleItemOwner;
 use crate::parsing;
 use crate::parsing::{ParseErrorWithPos};
 
 /// The ast tree sections wrapped into another enum that makes sense for preprocessor
 pub enum ReltNode {
-    Template(ast::MacroCall),
+    Template(ast::MacroRules),
     TemplateInvocation(ast::MacroCall),
     OtherItem(SyntaxNode),
     Mod(ReltMod),
@@ -16,9 +16,10 @@ pub enum ReltNode {
 impl ReltNode {
     pub fn from_item(item: ast::Item) -> ReltNode {
         match item {
-            ast::Item::MacroCall(mc) => if let Some(_) = mc.is_macro_rules() {
+            ast::Item::MacroRules(mc) => {
                 ReltNode::Template(mc)
-            } else {
+            },
+            ast::Item::MacroCall(mc) => {
                 ReltNode::TemplateInvocation(mc)
             },
             ast::Item::Module(m) => ReltNode::Mod(ReltMod::from_module_ast(m)),

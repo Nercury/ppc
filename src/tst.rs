@@ -1,7 +1,7 @@
 //! Template syntax tree
 
 use relative_path::{RelativePathBuf, RelativePath};
-use ra_syntax::{TextRange, ast, AstNode, SyntaxKind, SyntaxToken};
+use syntax::{TextRange, ast, AstNode, SyntaxKind, SyntaxToken};
 use std::collections::HashMap;
 use crate::parsing::{ParseErrorWithPos, Expected, ParseError, ParseErrorWithPosAndFile};
 use crate::{parsing, ParseConfig, relt};
@@ -225,7 +225,7 @@ impl GenerationPoint {
     }
 
     fn parse_additional_templates(relative_path: &RelativePath, data: &str) -> Result<HashMap<String, Template>, ParseErrorWithPosAndFile> {
-        let parsed = ra_syntax::SourceFile::parse(&data);
+        let parsed = syntax::SourceFile::parse(&data);
 
         trace!("error count {:?} {:?}", relative_path, parsed.errors().len());
 
@@ -249,7 +249,7 @@ impl GenerationPoint {
     }
 
     pub fn parse(relative_path: &RelativePath, data: &str, tmp_relative_path: Option<&RelativePath>, tmp_data: Option<&str>) -> Result<GenerationPoint, ParseErrorWithPosAndFile> {
-        let parsed = ra_syntax::SourceFile::parse(&data);
+        let parsed = syntax::SourceFile::parse(&data);
 
         trace!("error count {:?} {:?}", relative_path, parsed.errors().len());
 
@@ -471,23 +471,24 @@ pub struct Template {
 }
 
 impl Template {
-    pub fn parse(macro_call: &ast::MacroCall) -> Result<Template, ParseErrorWithPos> {
-        let rules = macro_call.is_macro_rules().unwrap();
-        let name = rules.to_string();
-        trace!("name {:?}", name);
-
-        let mut start_token = macro_call.syntax().first_token().unwrap();
+    pub fn parse(macro_rules: &ast::MacroRules) -> Result<Template, ParseErrorWithPos> {
+        let mut start_token = macro_rules.syntax().first_token().unwrap();
         while start_token.kind() != SyntaxKind::IDENT {
             start_token = parsing::expect_next(start_token)?;
         }
 
-        let mut end_token = macro_call.syntax().last_token().unwrap();
+        let mut end_token = macro_rules.syntax().last_token().unwrap();
+
+        let (next_token, _) = parsing::expect_any(start_token, &[
+            Expected::Kind(SyntaxKind::IDENT),
+        ])?;
+
+        let name = next_token.text().to_string();
+        start_token = parsing::expect_next(next_token)?;
+
+        debug!("name {:?}", name);
 
         start_token = parsing::consume_expected_list_forward(start_token, &[
-            Expected::Text("macro_rules"),
-            Expected::Kind(SyntaxKind::BANG),
-            Expected::Kind(SyntaxKind::WHITESPACE),
-            Expected::KindAndText(SyntaxKind::IDENT, &name),
             Expected::Optional(Box::new(Expected::Kind(SyntaxKind::WHITESPACE))),
             Expected::Kind(SyntaxKind::L_CURLY),
             Expected::Optional(Box::new(Expected::Kind(SyntaxKind::WHITESPACE))),

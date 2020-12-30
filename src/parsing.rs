@@ -1,4 +1,4 @@
-use ra_syntax::{SyntaxToken, SyntaxKind, TextRange};
+use syntax::{SyntaxToken, SyntaxKind, TextRange};
 use relative_path::{RelativePathBuf, RelativePath};
 
 pub fn expect_any(mut token: SyntaxToken, one_of: &[Expected]) -> Result<(SyntaxToken, usize), ParseErrorWithPos> {

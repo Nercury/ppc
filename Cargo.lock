@@ -10,6 +10,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "arena"
+version = "0.0.0"
+source = "git+https://github.com/rust-analyzer/rust-analyzer#bed7be9ed9f3eb905ae1c377f154fe0990b4c87f"
+
+[[package]]
 name = "arrayvec"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -27,10 +32,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "autocfg"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdb031dd78e28731d87d56cc8ffef4a8f36ca26c38fe2de700543e627f8a464a"
+
+[[package]]
 name = "cfg-if"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4785bdd1c96b2a846b2bd7cc02e86b6b3dbf14e7e53446c4f54c92a361040822"
+
+[[package]]
+name = "cfg-if"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
+
+[[package]]
+name = "difference"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "524cbf6897b527295dff137cec09ecf3a05f4fddffd7dfcd1585403449e74198"
 
 [[package]]
 name = "drop_bomb"
@@ -78,6 +101,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashbrown"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7afe4a420e3fe79967a00898cc1f4db7c8a49a9333a29f8a4bd76a253d5cd04"
+
+[[package]]
 name = "hermit-abi"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -96,6 +125,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "indexmap"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fb1fa934250de4de8aef298d81c729a7d33d8c239daa3a7575e6b92bfc7313b"
+dependencies = [
+ "autocfg",
+ "hashbrown",
+]
+
+[[package]]
 name = "itertools"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -103,6 +142,21 @@ checksum = "284f18f85651fe11e8a991b2adb42cb078325c996ed026d994719efcfca1d54b"
 dependencies = [
  "either",
 ]
+
+[[package]]
+name = "itertools"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37d572918e350e82412fe766d24b15e6682fb2ed2bbe018280caa810397cb319"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itoa"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd25036021b0de88a0aff6b850051563c6516d0bf53f8638938edbb9de732736"
 
 [[package]]
 name = "lazy_static"
@@ -122,7 +176,7 @@ version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4fabed175da42fed1fa0746b0ea71f412aa9d35e76e95e59b192c64b9dc2bf8b"
 dependencies = [
- "cfg-if",
+ "cfg-if 0.1.10",
 ]
 
 [[package]]
@@ -138,15 +192,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b631f7e854af39a1739f401cf34a8a013dfe09eac4fa4dba91e9768bd28168d"
 
 [[package]]
+name = "parser"
+version = "0.0.0"
+source = "git+https://github.com/rust-analyzer/rust-analyzer#bed7be9ed9f3eb905ae1c377f154fe0990b4c87f"
+dependencies = [
+ "drop_bomb",
+]
+
+[[package]]
+name = "perf-event"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7a1c2678a77d65edf773bd900f5b87f0944ac3421949842a2c6a4efe42d6c66"
+dependencies = [
+ "libc",
+ "perf-event-open-sys",
+]
+
+[[package]]
+name = "perf-event-open-sys"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce9bedf5da2c234fdf2391ede2b90fabf585355f33100689bc364a3ea558561a"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "preprocessor"
 version = "0.1.0"
 dependencies = [
  "env_logger",
  "gumdrop",
- "itertools",
+ "itertools 0.9.0",
  "log",
- "ra_syntax",
  "relative-path",
+ "syntax",
  "walkdir",
 ]
 
@@ -157,6 +238,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04f5f085b5d71e2188cb8271e5da0161ad52c3f227a661a3c135fdf28e258b12"
 dependencies = [
  "unicode-xid",
+]
+
+[[package]]
+name = "profile"
+version = "0.0.0"
+source = "git+https://github.com/rust-analyzer/rust-analyzer#bed7be9ed9f3eb905ae1c377f154fe0990b4c87f"
+dependencies = [
+ "arena",
+ "cfg-if 1.0.0",
+ "libc",
+ "once_cell",
+ "perf-event",
 ]
 
 [[package]]
@@ -172,40 +265,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa563d17ecb180e500da1cfd2b028310ac758de548efdd203e18f283af693f37"
 dependencies = [
  "proc-macro2",
-]
-
-[[package]]
-name = "ra_parser"
-version = "0.1.0"
-source = "git+https://github.com/rust-analyzer/rust-analyzer#f6c0b1ce59c9fa5bcbf482b1b9d16a3bae6abf1c"
-dependencies = [
- "drop_bomb",
-]
-
-[[package]]
-name = "ra_syntax"
-version = "0.1.0"
-source = "git+https://github.com/rust-analyzer/rust-analyzer#f6c0b1ce59c9fa5bcbf482b1b9d16a3bae6abf1c"
-dependencies = [
- "arrayvec",
- "itertools",
- "once_cell",
- "ra_parser",
- "ra_text_edit",
- "rowan",
- "rustc-ap-rustc_lexer",
- "rustc-hash",
- "serde",
- "smol_str",
- "stdx",
-]
-
-[[package]]
-name = "ra_text_edit"
-version = "0.1.0"
-source = "git+https://github.com/rust-analyzer/rust-analyzer#f6c0b1ce59c9fa5bcbf482b1b9d16a3bae6abf1c"
-dependencies = [
- "text-size",
 ]
 
 [[package]]
@@ -246,9 +305,9 @@ dependencies = [
 
 [[package]]
 name = "rustc-ap-rustc_lexer"
-version = "671.0.0"
+version = "695.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22e1221f3bfa2943c942cf8da319ab2346887f8757778c29c7f1822cd27b521f"
+checksum = "390bad134705b0bff02cd9541ac66df751a91c3cc734c3369cd6151ca269caed"
 dependencies = [
  "unicode-xid",
 ]
@@ -258,6 +317,12 @@ name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+
+[[package]]
+name = "ryu"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71d301d4193d031abdd79ff7e3dd721168a9572ef3fe51a1517aba235bd8f86e"
 
 [[package]]
 name = "same-file"
@@ -289,6 +354,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_json"
+version = "1.0.61"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fceb2595057b6891a4ee808f70054bd2d12f0e97f1cbb78689b59f676df325a"
+dependencies = [
+ "itoa",
+ "ryu",
+ "serde",
+]
+
+[[package]]
 name = "smol_str"
 version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -299,8 +375,8 @@ dependencies = [
 
 [[package]]
 name = "stdx"
-version = "0.1.0"
-source = "git+https://github.com/rust-analyzer/rust-analyzer#f6c0b1ce59c9fa5bcbf482b1b9d16a3bae6abf1c"
+version = "0.0.0"
+source = "git+https://github.com/rust-analyzer/rust-analyzer#bed7be9ed9f3eb905ae1c377f154fe0990b4c87f"
 
 [[package]]
 name = "syn"
@@ -314,6 +390,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "syntax"
+version = "0.0.0"
+source = "git+https://github.com/rust-analyzer/rust-analyzer#bed7be9ed9f3eb905ae1c377f154fe0990b4c87f"
+dependencies = [
+ "arrayvec",
+ "indexmap",
+ "itertools 0.10.0",
+ "once_cell",
+ "parser",
+ "profile",
+ "rowan",
+ "rustc-ap-rustc_lexer",
+ "rustc-hash",
+ "serde",
+ "smol_str",
+ "stdx",
+ "test_utils",
+ "text_edit",
+]
+
+[[package]]
 name = "termcolor"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -323,10 +420,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "test_utils"
+version = "0.0.0"
+source = "git+https://github.com/rust-analyzer/rust-analyzer#bed7be9ed9f3eb905ae1c377f154fe0990b4c87f"
+dependencies = [
+ "difference",
+ "rustc-hash",
+ "serde_json",
+ "stdx",
+ "text-size",
+]
+
+[[package]]
 name = "text-size"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f03e7efdedc3bc78cb2337f1e2785c39e45f5ef762d9e4ebb137fff7380a6d8a"
+
+[[package]]
+name = "text_edit"
+version = "0.0.0"
+source = "git+https://github.com/rust-analyzer/rust-analyzer#bed7be9ed9f3eb905ae1c377f154fe0990b4c87f"
+dependencies = [
+ "text-size",
+]
 
 [[package]]
 name = "thin-dst"
